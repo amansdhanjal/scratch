@@ -53,6 +53,8 @@ When you launch the installation of the cluster, you need to specify the followi
 
 ## Marathon
 
+Latest Steps can be found here: https://github.com/rgardler/azure-quickstart-templates/tree/acs/acs-mesos-full-template#marathon
+
 This walk through is based the wonderful digital ocean tutorial: https://www.digitalocean.com/community/tutorials/how-to-configure-a-production-ready-mesosphere-cluster-on-ubuntu-14-04
 
 1. Get your endpoints to cluster
@@ -67,7 +69,7 @@ This walk through is based the wonderful digital ocean tutorial: https://www.dig
  ![Image of public ip addresses in portal](https://raw.githubusercontent.com/anhowe/scratch/master/mesos-marathon/images/portal-publicipaddresses.png)
 
 2. Connect to your cluster
- 1. linux jumpbox - start a VNC to the jumpbox using instructions https://github.com/anhowe/ubuntu-devbox.  The jumpbox takes an hour to configure.  If the desktop is not ready, you can tail /var/log/azure/cluster-bootstrap.log to watach installation.
+ 1. linux jumpbox - start a VNC to the jumpbox using instructions https://github.com/anhowe/ubuntu-devbox.  The jumpbox takes an hour to configure.  If the desktop is not ready, you can tail /var/log/azure/cluster-bootstrap.log to watch installation.
  2. windows jumpbox - remote desktop to the windows jumpbox
  3. no jumpbox - SSH to port 2200 on your NAT creating a tunnel to port 5050 and port 8080.  Then use the browser of your desktop to browse these ports.
 
@@ -81,7 +83,7 @@ This walk through is based the wonderful digital ocean tutorial: https://www.dig
 
  ![Image of Mesos cluster on azure](https://raw.githubusercontent.com/anhowe/scratch/master/mesos-marathon/images/mesos-webui.png)
 
- 2. On top of page, click frameworks and notice your Marathon and Swarm frameworks
+ 2. On top of page, click frameworks and notice your Marathon and Chronos frameworks
 
  ![Image of Mesos cluster frameworks on azure](https://raw.githubusercontent.com/anhowe/scratch/master/mesos-marathon/images/mesos-frameworks.png)
 
@@ -180,6 +182,8 @@ Try the following workloads to test your new mesos cluster.  Run these on Marath
 1. **Folding@Home** - [docker run rgardler/fah](https://hub.docker.com/r/rgardler/fah/) - Folding@Home is searching for a cure for Cancer, Alzheimers, Parkinsons and other such diseases. Donate some compute time to this fantastic effort.
 
 2. **Mount Azure Files volume within Docker Container** - [docker run --privileged anhowe/azure-file-workload STORAGEACCOUNTNAME STORAGEACCOUNTKEY SHARENAME](https://github.com/anhowe/azure-file-workload) - From each container mount your Azure storage by using Azure files
+
+3. **Explore Docker Hub** - explore Docker Hub for 100,000+ different container workloads: https://hub.docker.com/explore/
 
 # Questions
 **Q.** Why is there a jumpbox for the mesos Cluster?

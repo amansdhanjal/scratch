@@ -9,7 +9,6 @@
 # - marathon
 # - mesos agent
 ###########################################################
-
 set -x
 
 echo "starting mesos cluster configuration"
@@ -20,7 +19,6 @@ SWARM_VERSION="ahmet/swarm:1.0.0-zk-hotfix"
 #############
 # Parameters
 #############
-
 MASTERCOUNT=${1}
 MASTERPREFIX=${2}
 MASTERFIRSTADDR=${3}
@@ -32,7 +30,7 @@ set +x
 ACCOUNTKEY=${8}
 set -x
 AZUREUSER=${9}
-SSHKEY=${10}
+POSTINSTALLSCRIPTURI=${10}
 HOMEDIR="/home/$AZUREUSER"
 VMNAME=`hostname`
 VMNUMBER=`echo $VMNAME | sed 's/.*[^0-9]\([0-9]\+\)*$/\1/'`
@@ -49,30 +47,8 @@ echo "ACCOUNTNAME: $ACCOUNTNAME"
 echo "BASESUBNET: $BASESUBNET"
 
 ###################
-# setup ssh access
-###################
-
-SSHDIR=$HOMEDIR/.ssh
-AUTHFILE=$SSHDIR/authorized_keys
-if [ `echo $SSHKEY | sed 's/^\(ssh-rsa \).*/\1/'` == "ssh-rsa" ] ; then
-  if [ ! -d $SSHDIR ] ; then
-    sudo -i -u $AZUREUSER mkdir $SSHDIR
-    sudo -i -u $AZUREUSER chmod 700 $SSHDIR
-  fi
-
-  if [ ! -e $AUTHFILE ] ; then
-    sudo -i -u $AZUREUSER touch $AUTHFILE
-    sudo -i -u $AZUREUSER chmod 600 $AUTHFILE
-  fi
-  echo $SSHKEY | sudo -i -u $AZUREUSER tee -a $AUTHFILE
-else
-  echo "no valid key data"
-fi
-
-###################
 # Common Functions
 ###################
-
 ensureAzureNetwork()
 {
   # ensure the host name is resolvable
@@ -109,12 +85,12 @@ ensureAzureNetwork()
   done
   if [ $networkHealthy -ne 0 ]
   then
-    echo "the network is not healthy, aborting install"
+    echo "the network is not healthy, cannot download from bing, aborting install"
     ifconfig
     ip a
     exit 2
   fi
-  # ensure the host ip can resolve
+  # ensure the hostname -i works
   networkHealthy=1
   for i in {1..120}; do
     hostname -i
@@ -134,7 +110,28 @@ ensureAzureNetwork()
     ip a
     exit 2
   fi
+  # ensure hostname -f works
+  networkHealthy=1
+  for i in {1..120}; do
+    hostname -f
+    if [ $? -eq 0 ]
+    then
+      # hostname has been found continue
+      networkHealthy=0
+      echo "the network is healthy"
+      break
+    fi
+    sleep 1
+  done
+  if [ $networkHealthy -ne 0 ]
+  then
+    echo "the network is not healthy, cannot resolve hostname, aborting install"
+    ifconfig
+    ip a
+    exit 2
+  fi
 }
+
 ensureAzureNetwork
 HOSTADDR=`hostname -i`
 
@@ -206,20 +203,32 @@ zkconfig()
 ######################
 # resolve self in DNS
 ######################
-
 echo "$HOSTADDR $VMNAME" | sudo tee -a /etc/hosts
 
 ################
 # Install Docker
 ################
-
 echo "Installing and configuring docker and swarm"
+installDocker()
+{
+  for i in {1..10}; do
+    wget --tries 4 --retry-connrefused --waitretry=15 -qO- https://get.docker.com | sh
+    if [ $? -eq 0 ]
+    then
+      # hostname has been found continue
+      echo "Docker installed successfully"
+      break
+    fi
+    sleep 10
+  done
+}
 
-time wget -qO- https://get.docker.com | sh
+time installDocker
+
 sudo usermod -aG docker $AZUREUSER
 if isagent ; then
   # Start Docker and listen on :2375 (no auth, but in vnet)
-  echo 'DOCKER_OPTS="-H unix:///var/run/docker.sock -H 0.0.0.0:2375"' | sudo tee /etc/default/docker
+  echo 'DOCKER_OPTS="-H unix:///var/run/docker.sock -H 0.0.0.0:2375"' | sudo tee -a /etc/default/docker
 fi
 
 if isomsrequired ; then
@@ -250,12 +259,12 @@ ensureDocker()
     echo "Docker is not healthy"
   fi
 }
+
 ensureDocker
 
 ############
 # setup OMS
 ############
-
 if isomsrequired ; then
   set +x
   EPSTRING="DefaultEndpointsProtocol=https;AccountName=${ACCOUNTNAME};AccountKey=${ACCOUNTKEY}"
@@ -266,24 +275,22 @@ fi
 ##################
 # Install Mesos
 ##################
-
 sudo apt-key adv --keyserver keyserver.ubuntu.com --recv E56151BF
 DISTRO=$(lsb_release -is | tr '[:upper:]' '[:lower:]')
 CODENAME=$(lsb_release -cs)
 echo "deb http://repos.mesosphere.io/${DISTRO} ${CODENAME} main" | sudo tee /etc/apt/sources.list.d/mesosphere.list
 time sudo add-apt-repository -y ppa:openjdk-r/ppa
 time sudo apt-get -y update
-time sudo apt-get -y install openjdk-8-jre-headless
+time sudo DEBIAN_FRONTEND=noninteractive apt-get -y --force-yes install openjdk-8-jre-headless
 if ismaster ; then
-  time sudo apt-get -y --force-yes install mesosphere
+  time sudo DEBIAN_FRONTEND=noninteractive apt-get -y --force-yes install mesosphere
 else
-  time sudo apt-get -y --force-yes install mesos
+  time sudo DEBIAN_FRONTEND=noninteractive apt-get -y --force-yes install mesos
 fi
 
 #########################
 # Configure ZooKeeper
 #########################
-
 zkmesosconfig=$(zkconfig "mesos")
 echo $zkmesosconfig | sudo tee /etc/mesos/zk
 
@@ -328,14 +335,27 @@ fi
 if ismaster ; then
   # Download and install mesos-dns
   sudo mkdir -p /usr/local/mesos-dns
-  sudo wget https://github.com/mesosphere/mesos-dns/releases/download/v0.2.0/mesos-dns-v0.2.0-linux-amd64.tgz
-  sudo tar zxvf mesos-dns-v0.2.0-linux-amd64.tgz
-  sudo mv mesos-dns-v0.2.0-linux-amd64 /usr/local/mesos-dns/mesos-dns
+  sudo wget --tries 4 --retry-connrefused --waitretry=15 https://github.com/mesosphere/mesos-dns/releases/download/v0.5.1/mesos-dns-v0.5.1-linux-amd64 -O mesos-dns-linux
+  sudo chmod +x mesos-dns-linux
+  sudo mv mesos-dns-linux /usr/local/mesos-dns/mesos-dns
   RESOLVER=`cat /etc/resolv.conf | grep nameserver | tail -n 1 | awk '{print $2}'`
 
-  echo "
+  COUNT=$((MASTERCOUNT-1))
+  #generate a list of master's for input to zk config
+  MASTERS=""
+  for i  in `seq 0 $COUNT` ;
+   do
+     MASTEROCTET=`expr $MASTERFIRSTADDR + $i`
+     IPADDR="$BASESUBNET$MASTEROCTET:5050"
+     MASTERS="$MASTERS\"${IPADDR}\""
+     if [ "$i" -lt "$COUNT" ]; then
+        MASTERS="$MASTERS,"
+     fi
+done
+echo "
 {
-  \"zk\": \"zk://127.0.0.1:2181/mesos\",
+  \"zk\": \"${zkmesosconfig}\",
+  \"masters\": ["${MASTERS}"],
   \"refreshSeconds\": 1,
   \"ttl\": 1,
   \"domain\": \"mesos\",
@@ -363,7 +383,6 @@ exec /usr/local/mesos-dns/mesos-dns -config /usr/local/mesos-dns/mesos-dns.json"
   sudo service mesos-dns start
 fi
 
-
 #########################
 # Configure Mesos Agent
 #########################
@@ -378,29 +397,26 @@ if isagent ; then
   fi
   hostname -i | sudo tee /etc/mesos-slave/ip
   hostname | sudo tee /etc/mesos-slave/hostname
-
-  # Add mesos-dns IP addresses at the top of resolv.conf
-  RESOLV_TMP=resolv.conf.temp
-  rm -f $RESOLV_TMP
-  for i in `seq 0 $((MASTERCOUNT-1))` ;
-  do
-      MASTEROCTET=`expr $MASTERFIRSTADDR + $i`
-      IPADDR="${BASESUBNET}${MASTEROCTET}"
-      echo nameserver $IPADDR >> $RESOLV_TMP
-  done
-
-  cat /etc/resolv.conf >> $RESOLV_TMP
-  mv $RESOLV_TMP /etc/resolv.conf
 fi
+# Add mesos-dns IP addresses to the head file, so they are at the top of the file
+for i in `seq 0 $((MASTERCOUNT-1))` ;
+do
+    MASTEROCTET=`expr $MASTERFIRSTADDR + $i`
+    IPADDR="${BASESUBNET}${MASTEROCTET}"
+    echo nameserver $IPADDR | sudo tee -a /etc/resolvconf/resolv.conf.d/head
+done
+cat /etc/resolvconf/resolv.conf.d/head
+sudo service resolvconf restart
 
 ##############################################
 # configure init rules restart all processes
 ##############################################
-
 echo "(re)starting mesos and framework processes"
 if ismaster ; then
   sudo service zookeeper restart
   sudo service mesos-master start
+  echo "sleep 10 seconds to allow master to start"
+  sleep 10
   if [ "$MARATHONENABLED" == "true" ] ; then
     sudo service marathon start
   fi
@@ -429,7 +445,7 @@ ps ax
 # Run swarm manager container only on the first master node
 if ismaster && [ "$SWARMENABLED" == "true" ] && [ $VMNUMBER -eq "0" ]; then
   echo "starting docker swarm version $SWARM_VERSION"
-  echo "sleep to give master time to come up"
+  echo "sleep 10 seconds to give master time to come up"
   sleep 10
   echo sudo docker run -d --net=host -e SWARM_MESOS_USER=root \
       --restart=always \
@@ -446,7 +462,67 @@ if ismaster && [ "$SWARMENABLED" == "true" ] && [ $VMNUMBER -eq "0" ]; then
   sudo docker ps
   echo "completed starting docker swarm"
 fi
-echo "processes at end of script"
+
+###################
+# Install Admin Router
+###################
+installMesosAdminRouter()
+{
+  sudo DEBIAN_FRONTEND=noninteractive apt-get -y --force-yes install nginx-extras lua-cjson
+  # the admin router comes from https://github.com/mesosphere/adminrouter-public
+  ADMIN_ROUTER_GITHUB_URL=https://raw.githubusercontent.com/anhowe/adminrouter-public/master
+  NGINX_CONF_PATH=/usr/share/nginx/conf
+  sudo mkdir -p $NGINX_CONF_PATH
+  wget --tries 4 --retry-connrefused --waitretry=15 -qO$NGINX_CONF_PATH/common.lua $ADMIN_ROUTER_GITHUB_URL/common.lua
+  wget --tries 4 --retry-connrefused --waitretry=15 -qO$NGINX_CONF_PATH/metadata.lua $ADMIN_ROUTER_GITHUB_URL/metadata.lua
+  wget --tries 4 --retry-connrefused --waitretry=15 -qO$NGINX_CONF_PATH/service.lua $ADMIN_ROUTER_GITHUB_URL/service.lua
+  wget --tries 4 --retry-connrefused --waitretry=15 -qO$NGINX_CONF_PATH/slave.lua $ADMIN_ROUTER_GITHUB_URL/slave.lua
+  wget --tries 4 --retry-connrefused --waitretry=15 -qO$NGINX_CONF_PATH/slavehostname.lua $ADMIN_ROUTER_GITHUB_URL/slavehostname.lua
+  wget --tries 4 --retry-connrefused --waitretry=15 -qO$NGINX_CONF_PATH/url.lua $ADMIN_ROUTER_GITHUB_URL/url.lua
+
+  sudo mv /etc/nginx/nginx.conf /etc/nginx/nginx.conf.orig
+  sudo cp /opt/azure/containers/nginx.conf /etc/nginx/nginx.conf
+  sudo service nginx restart
+}
+
+# only install the mesos dcos cli on the master
+if ismaster ; then
+  time installMesosAdminRouter
+fi
+
+###################
+# Install Mesos DCOS CLI
+###################
+installMesosDCOSCLI()
+{
+  sudo DEBIAN_FRONTEND=noninteractive apt-get -y --force-yes install -y python-pip
+  sudo pip install virtualenv
+  sudo -i -u $AZUREUSER mkdir $HOMEDIR/dcos
+  for i in {1..10}; do
+    wget --tries 4 --retry-connrefused --waitretry=15 -qO- https://raw.githubusercontent.com/mesosphere/dcos-cli/master/bin/install/install-optout-dcos-cli.sh | sudo -i -u $AZUREUSER /bin/bash -s $HOMEDIR/dcos/. http://leader.mesos --add-path yes
+    if [ $? -eq 0 ]
+    then
+      echo "Mesos DCOS-CLI installed successfully"
+      break
+    fi
+    sleep 10
+  done
+}
+
+# only install the mesos dcos cli on the master
+if ismaster ; then
+  time installMesosDCOSCLI
+fi
+
+###################
+# Post Install
+###################
+if [ $POSTINSTALLSCRIPTURI != "disabled" ]
+then
+  echo "downloading, and kicking off post install script"
+  /bin/bash -c "wget --tries 20 --retry-connrefused --waitretry=15 -qO- $POSTINSTALLSCRIPTURI | nohup /bin/bash >> /var/log/azure/cluster-bootstrap-postinstall.log 2>&1 &"
+fi
+
 ps ax
 echo "Finished installing and configuring docker and swarm"
 date
